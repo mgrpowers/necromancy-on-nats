@@ -215,23 +215,67 @@ class NodeService:
                     # Try to use request_lines (v2 API)
                     if hasattr(gpiod, 'request_lines'):
                         self.logger.info("Using gpiod v2.x API (request_lines)")
+                        
+                        # Check what attributes are available in gpiod module
+                        gpiod_attrs = [attr for attr in dir(gpiod) if not attr.startswith('_')]
+                        self.logger.debug(f"gpiod module attributes: {', '.join(gpiod_attrs)}")
+                        
+                        # Try to find the correct enum/class names
+                        LineSettings = None
+                        LineConfig = None
+                        LineDirection = None
+                        LineValue = None
+                        LineBias = None
+                        
+                        # Check common attribute patterns
+                        for attr in gpiod_attrs:
+                            if 'LineSettings' in attr or 'Settings' == attr:
+                                LineSettings = getattr(gpiod, attr)
+                            elif 'LineConfig' in attr or 'Config' == attr:
+                                LineConfig = getattr(gpiod, attr)
+                            elif 'Direction' in attr:
+                                LineDirection = getattr(gpiod, attr)
+                            elif 'Value' in attr and 'Line' in attr:
+                                LineValue = getattr(gpiod, attr)
+                            elif 'Bias' in attr:
+                                LineBias = getattr(gpiod, attr)
+                        
+                        # Try alternative paths: gpiod.line.Direction, etc.
+                        if hasattr(gpiod, 'line'):
+                            line_module = gpiod.line
+                            if not LineDirection and hasattr(line_module, 'Direction'):
+                                LineDirection = line_module.Direction
+                            if not LineValue and hasattr(line_module, 'Value'):
+                                LineValue = line_module.Value
+                            if not LineBias and hasattr(line_module, 'Bias'):
+                                LineBias = line_module.Bias
+                        
+                        if not LineSettings or not LineConfig:
+                            raise RuntimeError(f"gpiod v2 API not fully available. Found request_lines but missing LineSettings/LineConfig. Available: {gpiod_attrs}")
+                        
                         for pin_name, pin_config in pins.items():
                             pin_number = pin_config["number"]
                             pin_mode = pin_config.get("mode", "OUT")
                             
-                            settings = gpiod.LineSettings()
+                            settings = LineSettings()
                             if pin_mode == "OUT":
-                                settings.direction = gpiod.LineDirection.OUTPUT
-                                settings.output_value = gpiod.LineValue.ACTIVE if pin_config.get("initial", False) else gpiod.LineValue.INACTIVE
+                                if LineDirection:
+                                    settings.direction = LineDirection.OUTPUT
+                                if LineValue and pin_config.get("initial", False):
+                                    settings.output_value = LineValue.ACTIVE
+                                elif LineValue:
+                                    settings.output_value = LineValue.INACTIVE
                             else:
-                                settings.direction = gpiod.LineDirection.INPUT
+                                if LineDirection:
+                                    settings.direction = LineDirection.INPUT
                                 pull = pin_config.get("pull", "UP")
-                                if pull == "UP":
-                                    settings.bias = gpiod.LineBias.PULL_UP
-                                elif pull == "DOWN":
-                                    settings.bias = gpiod.LineBias.PULL_DOWN
+                                if LineBias:
+                                    if pull == "UP":
+                                        settings.bias = LineBias.PULL_UP
+                                    elif pull == "DOWN":
+                                        settings.bias = LineBias.PULL_DOWN
                             
-                            config = gpiod.LineConfig()
+                            config = LineConfig()
                             config.add_line_settings([pin_number], settings)
                             
                             line_request = gpiod.request_lines(
