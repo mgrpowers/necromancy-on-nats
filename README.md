@@ -32,8 +32,18 @@ The node service runs on Raspberry Pi devices (or any Linux system) and connects
 1. **Clone or navigate to this repository**
 
 2. **Install dependencies**:
+   
+   On newer Raspberry Pi OS/Debian systems with PEP 668 restrictions, you'll need to use `--break-system-packages`:
    ```bash
-   pip install -r requirements.txt
+   pip install --break-system-packages -r requirements.txt
+   ```
+   
+   **Note**: This installs packages system-wide. While generally safe for these packages, be aware that it bypasses system package manager protections as per PEP 668.
+   
+   Alternative: Install `RPi.GPIO` via apt if available, then install only `nats-py`:
+   ```bash
+   sudo apt install python3-rpi.gpio
+   pip install --break-system-packages nats-py
    ```
 
    Note: `RPi.GPIO` requires a Raspberry Pi. If running on a different system for testing, the service will run in simulation mode.
@@ -43,7 +53,7 @@ The node service runs on Raspberry Pi devices (or any Linux system) and connects
    cp config.json.example config.json
    ```
 
-4. **Edit `config.json`** to match your setup:
+3. **Edit `config.json`** to match your setup:
    - Set your NATS server address
    - Configure GPIO pins for your hardware
    - Define operations and message subjects
@@ -158,6 +168,8 @@ RestartSec=10
 [Install]
 WantedBy=multi-user.target
 ```
+
+Note: Make sure the system user has access to the packages installed with `--user`. You may need to set the `PYTHONPATH` environment variable in the service file if needed.
 
 Then:
 ```bash
