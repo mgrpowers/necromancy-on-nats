@@ -19,18 +19,26 @@ from nats.aio.subscription import Subscription
 # Try to import GPIO libraries - prefer RPi.GPIO for older Pis, gpiod for Pi 5
 GPIO_TYPE = None
 GPIO_AVAILABLE = False
+GPIO_MODULE = None
+GPIOD_AVAILABLE = False
 
 try:
     import RPi.GPIO as GPIO
+    GPIO_MODULE = GPIO
     GPIO_TYPE = "RPi"
     GPIO_AVAILABLE = True
 except (ImportError, RuntimeError):
-    try:
-        import gpiod
+    GPIO_MODULE = None
+
+# Also try to import gpiod (needed for Raspberry Pi 5)
+try:
+    import gpiod
+    GPIOD_AVAILABLE = True
+    if not GPIO_AVAILABLE:
         GPIO_TYPE = "gpiod"
         GPIO_AVAILABLE = True
-    except ImportError:
-        GPIO_AVAILABLE = False
+except ImportError:
+    pass
 
 
 class NodeService:
@@ -124,10 +132,12 @@ class NodeService:
                 else:
                     raise
         
-        # Try gpiod for Raspberry Pi 5
-        if GPIO_TYPE == "gpiod":
+        # Try gpiod for Raspberry Pi 5 (if RPi.GPIO failed or gpiod is available)
+        if GPIOD_AVAILABLE and (GPIO_TYPE == "gpiod" or (GPIO_TYPE == "RPi" and not self.gpio_enabled)):
             try:
                 import gpiod
+                # Update gpio_type since we're using gpiod
+                self.gpio_type = "gpiod"
                 
                 # Open GPIO chip (usually gpiochip4 on Pi 5)
                 chip_name = gpio_config.get("chip", "gpiochip4")

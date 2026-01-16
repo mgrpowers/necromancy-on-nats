@@ -144,6 +144,33 @@ Send a message to the service trigger subject (default: `necromancy.node.service
 - **OUT**: Output pin for controlling relays, LEDs, etc.
 - **IN**: Input pin for reading sensors, buttons, etc. (with optional pull-up/down)
 
+### Raspberry Pi 5 Notes
+
+On Raspberry Pi 5, the service automatically uses the `gpiod` library instead of `RPi.GPIO`, which is not compatible with Pi 5 hardware.
+
+**Installing gpiod for Pi 5:**
+```bash
+sudo apt install python3-libgpiod
+# or
+pip install --break-system-packages gpiod
+```
+
+**Command-line GPIO utilities:**
+- On Pi 4 and earlier: Use `raspi-gpio` command
+- On Pi 5: Use `pinctrl` command instead (raspi-gpio no longer works)
+
+Example with pinctrl on Pi 5:
+```bash
+# Set pin 18 to output
+sudo pinctrl set 18 op
+
+# Set pin 18 high
+sudo pinctrl set 18 dh
+
+# Set pin 18 low
+sudo pinctrl set 18 dl
+```
+
 ### Testing Without Hardware
 
 The service will automatically run in simulation mode if `RPi.GPIO` is not available. GPIO operations will be logged but not actually executed. This allows development and testing on non-Raspberry Pi systems.
