@@ -16,12 +16,21 @@ import nats
 from nats.aio.client import Client as NATS
 from nats.aio.subscription import Subscription
 
+# Try to import GPIO libraries - prefer RPi.GPIO for older Pis, gpiod for Pi 5
+GPIO_TYPE = None
+GPIO_AVAILABLE = False
+
 try:
     import RPi.GPIO as GPIO
+    GPIO_TYPE = "RPi"
     GPIO_AVAILABLE = True
-except ImportError:
-    GPIO_AVAILABLE = False
-    logging.warning("RPi.GPIO not available - GPIO control will be simulated")
+except (ImportError, RuntimeError):
+    try:
+        import gpiod
+        GPIO_TYPE = "gpiod"
+        GPIO_AVAILABLE = True
+    except ImportError:
+        GPIO_AVAILABLE = False
 
 
 class NodeService:
@@ -33,6 +42,9 @@ class NodeService:
         self.subscriptions: list[Subscription] = []
         self.running = False
         self.gpio_enabled = False
+        self.gpio_type = GPIO_TYPE
+        self.gpio_chip = None  # For gpiod
+        self.gpio_lines = {}  # For gpiod - stores line objects by pin name
         self._setup_logging()
         self._setup_gpio()
         
@@ -73,47 +85,84 @@ class NodeService:
             self.gpio_enabled = False
             return
         
-        try:
-            GPIO.setmode(GPIO.BCM)
-            GPIO.setwarnings(gpio_config.get("warnings", False))
-            
-            # Set up configured pins
-            pins = gpio_config.get("pins", {})
-            for pin_name, pin_config in pins.items():
-                pin_number = pin_config["number"]
-                pin_mode = pin_config.get("mode", "OUT")  # OUT or IN
+        pins = gpio_config.get("pins", {})
+        
+        # Try RPi.GPIO first (for older Raspberry Pis)
+        if GPIO_TYPE == "RPi":
+            try:
+                GPIO.setmode(GPIO.BCM)
+                GPIO.setwarnings(gpio_config.get("warnings", False))
                 
-                if pin_mode == "OUT":
-                    GPIO.setup(pin_number, GPIO.OUT)
-                    initial_state = pin_config.get("initial", False)
-                    GPIO.output(pin_number, GPIO.LOW if not initial_state else GPIO.HIGH)
-                    self.logger.info(f"Configured GPIO pin {pin_number} ({pin_name}) as OUTPUT, initial={initial_state}")
-                elif pin_mode == "IN":
-                    pull = pin_config.get("pull", "UP")
-                    if pull == "UP":
-                        GPIO.setup(pin_number, GPIO.IN, pull_up_down=GPIO.PUD_UP)
-                    elif pull == "DOWN":
-                        GPIO.setup(pin_number, GPIO.IN, pull_up_down=GPIO.PUD_DOWN)
-                    else:
-                        GPIO.setup(pin_number, GPIO.IN)
-                    self.logger.info(f"Configured GPIO pin {pin_number} ({pin_name}) as INPUT, pull={pull}")
-            
-            self.logger.info("GPIO setup complete")
-            self.gpio_enabled = True
-            
-        except RuntimeError as e:
-            error_msg = str(e)
-            self.logger.warning(f"GPIO setup failed: {error_msg}")
-            if "SOC peripheral base address" in error_msg:
-                self.logger.warning("This may be a Raspberry Pi 5 (requires gpiod library) or running without sufficient permissions")
-                self.logger.warning("Continuing in simulation mode - GPIO operations will be logged but not executed")
-            else:
-                self.logger.warning("Continuing in simulation mode - GPIO operations will be logged but not executed")
-            self.gpio_enabled = False
-        except Exception as e:
-            self.logger.warning(f"GPIO setup failed with unexpected error: {e}")
-            self.logger.warning("Continuing in simulation mode - GPIO operations will be logged but not executed")
-            self.gpio_enabled = False
+                for pin_name, pin_config in pins.items():
+                    pin_number = pin_config["number"]
+                    pin_mode = pin_config.get("mode", "OUT")
+                    
+                    if pin_mode == "OUT":
+                        GPIO.setup(pin_number, GPIO.OUT)
+                        initial_state = pin_config.get("initial", False)
+                        GPIO.output(pin_number, GPIO.LOW if not initial_state else GPIO.HIGH)
+                        self.logger.info(f"Configured GPIO pin {pin_number} ({pin_name}) as OUTPUT, initial={initial_state}")
+                    elif pin_mode == "IN":
+                        pull = pin_config.get("pull", "UP")
+                        if pull == "UP":
+                            GPIO.setup(pin_number, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+                        elif pull == "DOWN":
+                            GPIO.setup(pin_number, GPIO.IN, pull_up_down=GPIO.PUD_DOWN)
+                        else:
+                            GPIO.setup(pin_number, GPIO.IN)
+                        self.logger.info(f"Configured GPIO pin {pin_number} ({pin_name}) as INPUT, pull={pull}")
+                
+                self.logger.info("GPIO setup complete (using RPi.GPIO)")
+                self.gpio_enabled = True
+                return
+                
+            except RuntimeError as e:
+                error_msg = str(e)
+                if "SOC peripheral base address" in error_msg:
+                    self.logger.warning(f"RPi.GPIO failed (likely Raspberry Pi 5): {error_msg}")
+                    self.logger.info("Trying gpiod library instead...")
+                else:
+                    raise
+        
+        # Try gpiod for Raspberry Pi 5
+        if GPIO_TYPE == "gpiod":
+            try:
+                import gpiod
+                
+                # Open GPIO chip (usually gpiochip4 on Pi 5)
+                chip_name = gpio_config.get("chip", "gpiochip4")
+                self.gpio_chip = gpiod.Chip(chip_name)
+                
+                for pin_name, pin_config in pins.items():
+                    pin_number = pin_config["number"]
+                    pin_mode = pin_config.get("mode", "OUT")
+                    
+                    line = self.gpio_chip.get_line(pin_number)
+                    
+                    if pin_mode == "OUT":
+                        line.request(consumer=f"necromancy-{pin_name}", type=gpiod.LINE_REQ_DIR_OUT)
+                        initial_state = pin_config.get("initial", False)
+                        line.set_value(1 if initial_state else 0)
+                        self.gpio_lines[pin_name] = line
+                        self.logger.info(f"Configured GPIO pin {pin_number} ({pin_name}) as OUTPUT, initial={initial_state}")
+                    elif pin_mode == "IN":
+                        pull = pin_config.get("pull", "UP")
+                        pull_type = gpiod.LINE_REQ_PULL_UP if pull == "UP" else (gpiod.LINE_REQ_PULL_DOWN if pull == "DOWN" else gpiod.LINE_REQ_PULL_NONE)
+                        line.request(consumer=f"necromancy-{pin_name}", type=gpiod.LINE_REQ_DIR_IN, flags=pull_type)
+                        self.gpio_lines[pin_name] = line
+                        self.logger.info(f"Configured GPIO pin {pin_number} ({pin_name}) as INPUT, pull={pull}")
+                
+                self.logger.info(f"GPIO setup complete (using gpiod on {chip_name})")
+                self.gpio_enabled = True
+                return
+                
+            except Exception as e:
+                self.logger.warning(f"gpiod setup failed: {e}")
+                self.gpio_enabled = False
+        
+        # Fallback to simulation mode
+        self.logger.warning("Continuing in simulation mode - GPIO operations will be logged but not executed")
+        self.gpio_enabled = False
     
     async def _handle_message(self, msg, operation: str):
         """Handle incoming NATS messages."""
@@ -168,14 +217,22 @@ class NodeService:
                 if pin_mode != "OUT":
                     self.logger.error(f"Pin {pin_name} is not configured as OUTPUT")
                     return
-                GPIO.output(pin_number, GPIO.HIGH if value else GPIO.LOW)
+                if self.gpio_type == "RPi":
+                    GPIO.output(pin_number, GPIO.HIGH if value else GPIO.LOW)
+                elif self.gpio_type == "gpiod":
+                    line = self.gpio_lines[pin_name]
+                    line.set_value(1 if value else 0)
                 self.logger.info(f"Set GPIO {pin_name} ({pin_number}) to {value}")
                 
             elif action == "get":
                 if pin_mode != "IN":
                     self.logger.error(f"Pin {pin_name} is not configured as INPUT")
                     return
-                state = GPIO.input(pin_number)
+                if self.gpio_type == "RPi":
+                    state = GPIO.input(pin_number)
+                elif self.gpio_type == "gpiod":
+                    line = self.gpio_lines[pin_name]
+                    state = line.get_value()
                 self.logger.info(f"GPIO {pin_name} ({pin_number}) state: {state}")
                 # Could publish response back to NATS here
                 
@@ -183,9 +240,15 @@ class NodeService:
                 if pin_mode != "OUT":
                     self.logger.error(f"Pin {pin_name} is not configured as OUTPUT")
                     return
-                current_state = GPIO.input(pin_number)
-                new_state = not current_state
-                GPIO.output(pin_number, GPIO.HIGH if new_state else GPIO.LOW)
+                if self.gpio_type == "RPi":
+                    current_state = GPIO.input(pin_number)
+                    new_state = not current_state
+                    GPIO.output(pin_number, GPIO.HIGH if new_state else GPIO.LOW)
+                elif self.gpio_type == "gpiod":
+                    line = self.gpio_lines[pin_name]
+                    current_state = line.get_value()
+                    new_state = 1 - current_state  # Toggle 0<->1
+                    line.set_value(new_state)
                 self.logger.info(f"Toggled GPIO {pin_name} ({pin_number}) to {new_state}")
                 
             elif action == "pulse":
@@ -193,9 +256,15 @@ class NodeService:
                     self.logger.error(f"Pin {pin_name} is not configured as OUTPUT")
                     return
                 # Pulse high
-                GPIO.output(pin_number, GPIO.HIGH)
-                await asyncio.sleep(duration)
-                GPIO.output(pin_number, GPIO.LOW)
+                if self.gpio_type == "RPi":
+                    GPIO.output(pin_number, GPIO.HIGH)
+                    await asyncio.sleep(duration)
+                    GPIO.output(pin_number, GPIO.LOW)
+                elif self.gpio_type == "gpiod":
+                    line = self.gpio_lines[pin_name]
+                    line.set_value(1)
+                    await asyncio.sleep(duration)
+                    line.set_value(0)
                 self.logger.info(f"Pulsed GPIO {pin_name} ({pin_number}) for {duration}s")
                 
             else:
@@ -326,8 +395,16 @@ class NodeService:
         # Cleanup GPIO
         if GPIO_AVAILABLE and self.gpio_enabled:
             try:
-                GPIO.cleanup()
-                self.logger.info("GPIO cleaned up")
+                if self.gpio_type == "RPi":
+                    GPIO.cleanup()
+                    self.logger.info("GPIO cleaned up (RPi.GPIO)")
+                elif self.gpio_type == "gpiod":
+                    # Release all gpiod lines
+                    for pin_name, line in self.gpio_lines.items():
+                        line.release()
+                    if self.gpio_chip:
+                        self.gpio_chip.close()
+                    self.logger.info("GPIO cleaned up (gpiod)")
             except Exception as e:
                 self.logger.warning(f"Error during GPIO cleanup: {e}")
 
