@@ -279,8 +279,9 @@ class NodeService:
             self.logger.info(f"Subscribing to subject '{subject}' (queue={queue}, operation={operation})")
             
             # Create an async callback wrapper for this operation
-            async def message_callback(msg):
-                await self._handle_message(msg, operation)
+            # Capture operation as default parameter to avoid closure issues
+            async def message_callback(msg, op=operation):
+                await self._handle_message(msg, op)
             
             sub = await self.nats_client.subscribe(
                 subject,
