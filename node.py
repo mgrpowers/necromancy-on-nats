@@ -45,6 +45,10 @@ class NodeService:
         )
         self.logger = logging.getLogger(__name__)
         
+        # Reduce verbosity of NATS library logs (only show WARNING and above)
+        nats_logger = logging.getLogger("nats")
+        nats_logger.setLevel(logging.WARNING)
+        
     def _load_config(self, config_path: str) -> Dict[str, Any]:
         """Load configuration from JSON file."""
         config_file = Path(config_path)
@@ -225,6 +229,7 @@ class NodeService:
             servers = [servers]
         
         self.logger.info(f"Connecting to NATS servers: {servers}")
+        self.logger.info("Note: If connection fails, ensure NATS server is running and accessible")
         
         try:
             self.nats_client = await nats.connect(
@@ -233,10 +238,21 @@ class NodeService:
                 reconnect_time_wait=nats_config.get("reconnect_time_wait", 2),
                 max_reconnect_attempts=nats_config.get("max_reconnect_attempts", -1),
                 ping_interval=nats_config.get("ping_interval", 20),
+                connect_timeout=nats_config.get("connect_timeout", 4),
             )
-            self.logger.info("Connected to NATS")
+            self.logger.info("Connected to NATS successfully")
         except Exception as e:
-            self.logger.error(f"Failed to connect to NATS: {e}")
+            error_msg = str(e)
+            if "Timeout" in error_msg or "Connection" in error_msg:
+                self.logger.error(f"Failed to connect to NATS server at {servers}")
+                self.logger.error("Please check:")
+                self.logger.error("  - NATS server is running and accessible")
+                self.logger.error("  - Network connectivity to the server")
+                self.logger.error("  - Firewall settings allow connections on port 4222")
+                self.logger.error("  - Server address and port are correct in config.json")
+                self.logger.info("Will continue retrying in the background...")
+            else:
+                self.logger.error(f"Failed to connect to NATS: {e}")
             raise
     
     async def setup_subscriptions(self):
@@ -262,10 +278,14 @@ class NodeService:
             
             self.logger.info(f"Subscribing to subject '{subject}' (queue={queue}, operation={operation})")
             
+            # Create an async callback wrapper for this operation
+            async def message_callback(msg):
+                await self._handle_message(msg, operation)
+            
             sub = await self.nats_client.subscribe(
                 subject,
                 queue=queue,
-                cb=lambda msg, op=operation: asyncio.create_task(self._handle_message(msg, op))
+                cb=message_callback
             )
             
             self.subscriptions.append(sub)
