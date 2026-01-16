@@ -136,11 +136,40 @@ class NodeService:
         if GPIOD_AVAILABLE and (GPIO_TYPE == "gpiod" or (GPIO_TYPE == "RPi" and not self.gpio_enabled)):
             try:
                 import gpiod
+                import os
                 # Update gpio_type since we're using gpiod
                 self.gpio_type = "gpiod"
                 
-                # Open GPIO chip (usually gpiochip4 on Pi 5)
-                chip_name = gpio_config.get("chip", "gpiochip4")
+                # Try to find the GPIO chip - check config first, then auto-detect
+                chip_name = gpio_config.get("chip")
+                
+                if not chip_name:
+                    # Auto-detect chip by trying common names
+                    common_chips = ["gpiochip4", "gpiochip0", "gpiochip1"]
+                    chip_name = None
+                    
+                    for chip in common_chips:
+                        chip_path = f"/dev/{chip}"
+                        if os.path.exists(chip_path):
+                            chip_name = chip
+                            self.logger.info(f"Auto-detected GPIO chip: {chip_name}")
+                            break
+                    
+                    if not chip_name:
+                        # List all available chips
+                        available_chips = []
+                        for i in range(10):  # Check gpiochip0-9
+                            chip_path = f"/dev/gpiochip{i}"
+                            if os.path.exists(chip_path):
+                                available_chips.append(f"gpiochip{i}")
+                        
+                        if available_chips:
+                            chip_name = available_chips[0]
+                            self.logger.info(f"Found available GPIO chips: {', '.join(available_chips)}")
+                            self.logger.info(f"Using: {chip_name}")
+                        else:
+                            raise FileNotFoundError("No GPIO chip devices found in /dev/. Make sure gpiod is installed and GPIO is enabled.")
+                
                 self.gpio_chip = gpiod.Chip(chip_name)
                 
                 for pin_name, pin_config in pins.items():
@@ -167,7 +196,26 @@ class NodeService:
                 return
                 
             except Exception as e:
-                self.logger.warning(f"gpiod setup failed: {e}")
+                error_msg = str(e)
+                self.logger.warning(f"gpiod setup failed: {error_msg}")
+                
+                # Try to list available chips for debugging
+                if "No such file" in error_msg or "not found" in error_msg.lower():
+                    import os
+                    available_chips = []
+                    for i in range(10):
+                        chip_path = f"/dev/gpiochip{i}"
+                        if os.path.exists(chip_path):
+                            available_chips.append(f"gpiochip{i}")
+                    
+                    if available_chips:
+                        self.logger.info(f"Available GPIO chips: {', '.join(available_chips)}")
+                        self.logger.info("You can specify the chip in config.json: \"gpio\": {\"chip\": \"gpiochip0\", ...}")
+                    else:
+                        self.logger.warning("No GPIO chip devices found. Make sure:")
+                        self.logger.warning("  1. gpiod is installed: sudo apt install python3-libgpiod")
+                        self.logger.warning("  2. GPIO is enabled in the system")
+                
                 self.gpio_enabled = False
         
         # Fallback to simulation mode
