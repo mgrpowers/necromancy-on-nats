@@ -203,24 +203,68 @@ class NodeService:
                 if not chip_opened:
                     raise last_error or FileNotFoundError(f"Could not open any GPIO chip. Tried: {', '.join(chips_to_try)}")
                 
-                for pin_name, pin_config in pins.items():
-                    pin_number = pin_config["number"]
-                    pin_mode = pin_config.get("mode", "OUT")
-                    
-                    line = self.gpio_chip.get_line(pin_number)
-                    
-                    if pin_mode == "OUT":
-                        line.request(consumer=f"necromancy-{pin_name}", type=gpiod.LINE_REQ_DIR_OUT)
-                        initial_state = pin_config.get("initial", False)
-                        line.set_value(1 if initial_state else 0)
-                        self.gpio_lines[pin_name] = line
-                        self.logger.info(f"Configured GPIO pin {pin_number} ({pin_name}) as OUTPUT, initial={initial_state}")
-                    elif pin_mode == "IN":
-                        pull = pin_config.get("pull", "UP")
-                        pull_type = gpiod.LINE_REQ_PULL_UP if pull == "UP" else (gpiod.LINE_REQ_PULL_DOWN if pull == "DOWN" else gpiod.LINE_REQ_PULL_NONE)
-                        line.request(consumer=f"necromancy-{pin_name}", type=gpiod.LINE_REQ_DIR_IN, flags=pull_type)
-                        self.gpio_lines[pin_name] = line
-                        self.logger.info(f"Configured GPIO pin {pin_number} ({pin_name}) as INPUT, pull={pull}")
+                # Debug: log available methods
+                chip_methods = [m for m in dir(self.gpio_chip) if not m.startswith('_')]
+                self.logger.debug(f"Available Chip methods: {', '.join(chip_methods)}")
+                
+                # Check which gpiod API is available
+                has_get_line = hasattr(self.gpio_chip, 'get_line')
+                has_get_lines = hasattr(self.gpio_chip, 'get_lines')
+                
+                if not has_get_line and not has_get_lines:
+                    # Try to use request_lines (v2 API)
+                    if hasattr(gpiod, 'request_lines'):
+                        self.logger.info("Using gpiod v2.x API (request_lines)")
+                        for pin_name, pin_config in pins.items():
+                            pin_number = pin_config["number"]
+                            pin_mode = pin_config.get("mode", "OUT")
+                            
+                            settings = gpiod.LineSettings()
+                            if pin_mode == "OUT":
+                                settings.direction = gpiod.LineDirection.OUTPUT
+                                settings.output_value = gpiod.LineValue.ACTIVE if pin_config.get("initial", False) else gpiod.LineValue.INACTIVE
+                            else:
+                                settings.direction = gpiod.LineDirection.INPUT
+                                pull = pin_config.get("pull", "UP")
+                                if pull == "UP":
+                                    settings.bias = gpiod.LineBias.PULL_UP
+                                elif pull == "DOWN":
+                                    settings.bias = gpiod.LineBias.PULL_DOWN
+                            
+                            config = gpiod.LineConfig()
+                            config.add_line_settings([pin_number], settings)
+                            
+                            line_request = gpiod.request_lines(
+                                chip=self.gpio_chip,
+                                consumer=f"necromancy-{pin_name}",
+                                config=config
+                            )
+                            self.gpio_lines[pin_name] = {"request": line_request, "pin": pin_number, "v2": True}
+                            initial_state = pin_config.get("initial", False) if pin_mode == "OUT" else None
+                            self.logger.info(f"Configured GPIO pin {pin_number} ({pin_name}) as {pin_mode}, initial={initial_state}")
+                    else:
+                        raise RuntimeError("Unsupported gpiod API. Available methods: " + str([m for m in dir(self.gpio_chip) if not m.startswith('_')]))
+                elif has_get_line:
+                    # gpiod v1.x API - use get_line()
+                    self.logger.info("Using gpiod v1.x API (get_line)")
+                    for pin_name, pin_config in pins.items():
+                        pin_number = pin_config["number"]
+                        pin_mode = pin_config.get("mode", "OUT")
+                        
+                        line = self.gpio_chip.get_line(pin_number)
+                        
+                        if pin_mode == "OUT":
+                            line.request(consumer=f"necromancy-{pin_name}", type=gpiod.LINE_REQ_DIR_OUT)
+                            initial_state = pin_config.get("initial", False)
+                            line.set_value(1 if initial_state else 0)
+                            self.gpio_lines[pin_name] = {"line": line, "pin": pin_number, "v2": False}
+                            self.logger.info(f"Configured GPIO pin {pin_number} ({pin_name}) as OUTPUT, initial={initial_state}")
+                        elif pin_mode == "IN":
+                            pull = pin_config.get("pull", "UP")
+                            pull_type = gpiod.LINE_REQ_PULL_UP if pull == "UP" else (gpiod.LINE_REQ_PULL_DOWN if pull == "DOWN" else gpiod.LINE_REQ_PULL_NONE)
+                            line.request(consumer=f"necromancy-{pin_name}", type=gpiod.LINE_REQ_DIR_IN, flags=pull_type)
+                            self.gpio_lines[pin_name] = {"line": line, "pin": pin_number, "v2": False}
+                            self.logger.info(f"Configured GPIO pin {pin_number} ({pin_name}) as INPUT, pull={pull}")
                 
                 self.logger.info(f"GPIO setup complete (using gpiod on {chip_name})")
                 self.gpio_enabled = True
@@ -229,6 +273,13 @@ class NodeService:
             except Exception as e:
                 error_msg = str(e)
                 self.logger.warning(f"gpiod setup failed: {error_msg}")
+                
+                # Log available methods for debugging
+                if hasattr(self, 'gpio_chip') and self.gpio_chip:
+                    chip_methods = [m for m in dir(self.gpio_chip) if not m.startswith('_')]
+                    self.logger.debug(f"Available Chip methods: {', '.join(chip_methods)}")
+                gpiod_attrs = [m for m in dir(gpiod) if not m.startswith('_')]
+                self.logger.debug(f"Available gpiod module attributes: {', '.join(gpiod_attrs[:10])}")
                 
                 # Try to list available chips for debugging
                 if "No such file" in error_msg or "not found" in error_msg.lower():
