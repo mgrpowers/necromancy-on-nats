@@ -1,0 +1,46 @@
+{
+  "nats": {
+    "servers": ["nats://192.168.50.119:4222"],
+    "client_name": "raspberry-pi-node",
+    "reconnect_time_wait": 2,
+    "max_reconnect_attempts": -1,
+    "ping_interval": 20
+  },
+  "operations": [
+    {
+      "subject": "necromancy.node.gpio.control",
+      "queue": "gpio-workers",
+      "operation": "gpio_control"
+    },
+    {
+      "subject": "necromancy.node.service.trigger",
+      "queue": "service-workers",
+      "operation": "service_trigger"
+    }
+  ],
+  "gpio": {
+    "enabled": true,
+    "warnings": false,
+    "pins": {
+      "relay1": {
+        "number": 18,
+        "mode": "OUT",
+        "initial": false
+      },
+      "relay2": {
+        "number": 19,
+        "mode": "OUT",
+        "initial": false
+      },
+      "button1": {
+        "number": 21,
+        "mode": "IN",
+        "pull": "UP"
+      }
+    }
+  },
+  "logging": {
+    "level": "INFO"
+  }
+}
+
