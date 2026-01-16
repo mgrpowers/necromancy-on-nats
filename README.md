@@ -155,6 +155,31 @@ sudo apt install python3-libgpiod
 pip install --break-system-packages gpiod
 ```
 
+**Enabling GPIO in raspi-config:**
+
+If `/dev/gpiochip*` devices are not found, you may need to enable GPIO through raspi-config:
+
+```bash
+sudo raspi-config
+```
+
+Navigate to: **Interface Options** → **GPIO** (if available) or ensure the following are enabled:
+- **Interface Options** → **I2C** (sometimes required for GPIO subsystems)
+- **Interface Options** → **SPI** (if using SPI pins)
+
+After enabling, reboot:
+```bash
+sudo reboot
+```
+
+**Verify GPIO chips are available:**
+```bash
+ls -la /dev/gpiochip*
+# Should show files like /dev/gpiochip0, /dev/gpiochip4, etc.
+```
+
+**Note**: On Raspberry Pi 5, GPIO character devices (`/dev/gpiochip*`) should be available by default. If they're missing, it may indicate a kernel configuration issue or the device tree overlays need to be enabled.
+
 **Command-line GPIO utilities:**
 - On Pi 4 and earlier: Use `raspi-gpio` command
 - On Pi 5: Use `pinctrl` command instead (raspi-gpio no longer works)

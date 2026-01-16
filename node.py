@@ -140,37 +140,68 @@ class NodeService:
                 # Update gpio_type since we're using gpiod
                 self.gpio_type = "gpiod"
                 
+                # Find all available GPIO chips
+                available_chips = []
+                for i in range(10):  # Check gpiochip0-9
+                    chip_path = f"/dev/gpiochip{i}"
+                    if os.path.exists(chip_path):
+                        available_chips.append(f"gpiochip{i}")
+                
+                if not available_chips:
+                    raise FileNotFoundError("No GPIO chip devices found in /dev/. Make sure gpiod is installed and GPIO is enabled.")
+                
                 # Try to find the GPIO chip - check config first, then auto-detect
                 chip_name = gpio_config.get("chip")
+                chips_to_try = []
                 
-                if not chip_name:
-                    # Auto-detect chip by trying common names
-                    common_chips = ["gpiochip4", "gpiochip0", "gpiochip1"]
-                    chip_name = None
-                    
-                    for chip in common_chips:
-                        chip_path = f"/dev/{chip}"
-                        if os.path.exists(chip_path):
-                            chip_name = chip
-                            self.logger.info(f"Auto-detected GPIO chip: {chip_name}")
+                if chip_name:
+                    # Use configured chip if available
+                    if chip_name in available_chips:
+                        chips_to_try = [chip_name]
+                    else:
+                        self.logger.warning(f"Configured chip '{chip_name}' not found. Available chips: {', '.join(available_chips)}")
+                        chips_to_try = available_chips
+                else:
+                    # Auto-detect: prefer common chips in order
+                    preferred_order = ["gpiochip4", "gpiochip0", "gpiochip1"]
+                    for preferred in preferred_order:
+                        if preferred in available_chips:
+                            chips_to_try.append(preferred)
+                    # Add any remaining chips
+                    for chip in available_chips:
+                        if chip not in chips_to_try:
+                            chips_to_try.append(chip)
+                
+                # Try each chip until one works
+                chip_opened = False
+                last_error = None
+                
+                for chip_to_try in chips_to_try:
+                    try:
+                        self.logger.info(f"Trying to open GPIO chip: {chip_to_try}")
+                        # Try with just the name first
+                        self.gpio_chip = gpiod.Chip(chip_to_try)
+                        chip_name = chip_to_try
+                        chip_opened = True
+                        self.logger.info(f"Successfully opened GPIO chip: {chip_name}")
+                        break
+                    except Exception as e:
+                        last_error = e
+                        # Try with full path if name doesn't work
+                        try:
+                            chip_path = f"/dev/{chip_to_try}"
+                            self.logger.info(f"Trying with full path: {chip_path}")
+                            self.gpio_chip = gpiod.Chip(chip_path)
+                            chip_name = chip_to_try
+                            chip_opened = True
+                            self.logger.info(f"Successfully opened GPIO chip: {chip_name}")
                             break
-                    
-                    if not chip_name:
-                        # List all available chips
-                        available_chips = []
-                        for i in range(10):  # Check gpiochip0-9
-                            chip_path = f"/dev/gpiochip{i}"
-                            if os.path.exists(chip_path):
-                                available_chips.append(f"gpiochip{i}")
-                        
-                        if available_chips:
-                            chip_name = available_chips[0]
-                            self.logger.info(f"Found available GPIO chips: {', '.join(available_chips)}")
-                            self.logger.info(f"Using: {chip_name}")
-                        else:
-                            raise FileNotFoundError("No GPIO chip devices found in /dev/. Make sure gpiod is installed and GPIO is enabled.")
+                        except Exception as e2:
+                            self.logger.debug(f"Failed to open {chip_to_try}: {e}, {e2}")
+                            continue
                 
-                self.gpio_chip = gpiod.Chip(chip_name)
+                if not chip_opened:
+                    raise last_error or FileNotFoundError(f"Could not open any GPIO chip. Tried: {', '.join(chips_to_try)}")
                 
                 for pin_name, pin_config in pins.items():
                     pin_number = pin_config["number"]
