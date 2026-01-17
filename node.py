@@ -24,6 +24,14 @@ try:
 except ImportError:
     GPIO_AVAILABLE = False
 
+# Keyboard event listening for media keys
+KEYBOARD_AVAILABLE = False
+try:
+    from pynput import keyboard
+    KEYBOARD_AVAILABLE = True
+except ImportError:
+    KEYBOARD_AVAILABLE = False
+
 
 class NodeService:
     """Service that connects to NATS and handles GPIO control operations."""
@@ -35,6 +43,9 @@ class NodeService:
         self.running = False
         self.gpio_enabled = False
         self.gpio_devices = {}  # Store gpiozero device objects by pin name
+        self.keyboard_listener = None  # For keyboard event listening
+        self.gpio_toggle_state = {}  # Track GPIO state for toggling
+        self.event_loop = None  # Store event loop for keyboard listener thread
         self._setup_logging()
         self._setup_gpio()
         
@@ -102,6 +113,93 @@ class NodeService:
             self.logger.warning("Continuing in simulation mode - GPIO operations will be logged but not executed")
             self.gpio_enabled = False
     
+    def _setup_keyboard_listener(self):
+        """Set up keyboard event listener for play/pause to toggle GPIO."""
+        keyboard_config = self.config.get("keyboard", {})
+        
+        if not keyboard_config.get("enabled", False):
+            return
+        
+        if not KEYBOARD_AVAILABLE:
+            self.logger.warning("pynput not available - keyboard events disabled")
+            return
+        
+        pin_name = keyboard_config.get("pin", "relay1")
+        toggle_key = keyboard_config.get("key", "play/pause")  # Can be "play/pause", "media_play_pause", etc.
+        
+        # Initialize toggle state from GPIO device if available
+        if pin_name in self.gpio_devices:
+            device = self.gpio_devices[pin_name]
+            self.gpio_toggle_state[pin_name] = bool(device.value) if hasattr(device, 'value') else False
+        else:
+            self.gpio_toggle_state[pin_name] = False
+        
+        def on_key_press(key):
+            """Handle key press events."""
+            try:
+                # Handle play/pause media key
+                if hasattr(key, 'name'):
+                    key_name = key.name
+                else:
+                    key_name = str(key)
+                
+                # Check for play/pause media key (keyboard.Key.media_play_pause)
+                is_play_pause = False
+                try:
+                    if hasattr(keyboard.Key, 'media_play_pause'):
+                        is_play_pause = (key == keyboard.Key.media_play_pause)
+                    # Also check by string comparison
+                    if hasattr(key, 'name'):
+                        is_play_pause = is_play_pause or (key.name == 'media_play_pause')
+                    if hasattr(key, '__str__'):
+                        key_str = str(key)
+                        is_play_pause = is_play_pause or ('media_play_pause' in key_str or 'play_pause' in key_str)
+                except:
+                    pass
+                
+                # Also check if toggle_key matches (case-insensitive)
+                if is_play_pause or (toggle_key.lower() in str(key).lower()):
+                    # Schedule coroutine from keyboard listener thread
+                    if self.event_loop:
+                        asyncio.run_coroutine_threadsafe(
+                            self._handle_keyboard_toggle(pin_name),
+                            self.event_loop
+                        )
+                    else:
+                        self.logger.warning("Event loop not available - keyboard toggle ignored")
+                    
+            except Exception as e:
+                self.logger.debug(f"Error handling key press: {e}")
+        
+        # Start keyboard listener in a separate thread
+        self.keyboard_listener = keyboard.Listener(on_press=on_key_press)
+        self.keyboard_listener.start()
+        self.logger.info(f"Keyboard listener started - {toggle_key} key will toggle GPIO pin '{pin_name}'")
+    
+    async def _handle_keyboard_toggle(self, pin_name: str):
+        """Handle keyboard-triggered GPIO toggle via NATS."""
+        # Toggle the state
+        current_state = self.gpio_toggle_state.get(pin_name, False)
+        new_state = not current_state
+        self.gpio_toggle_state[pin_name] = new_state
+        
+        # Publish NATS message to toggle GPIO
+        if self.nats_client and self.nats_client.is_connected:
+            subject = self.config.get("keyboard", {}).get("subject", "necromancy.node.gpio.control")
+            message = {
+                "pin": pin_name,
+                "action": "set",
+                "value": new_state
+            }
+            
+            try:
+                await self.nats_client.publish(subject, json.dumps(message).encode())
+                self.logger.info(f"Keyboard toggle: Published GPIO {pin_name} = {new_state} to NATS")
+            except Exception as e:
+                self.logger.error(f"Failed to publish keyboard toggle message: {e}")
+        else:
+            self.logger.warning("NATS not connected - keyboard toggle message not sent")
+    
     async def _handle_message(self, msg, operation: str):
         """Handle incoming NATS messages."""
         try:
@@ -159,6 +257,8 @@ class NodeService:
                     return
                 if device:
                     device.value = value
+                # Update toggle state for keyboard listener
+                self.gpio_toggle_state[pin_name] = bool(value)
                 self.logger.info(f"Set GPIO {pin_name} ({pin_number}) to {value}")
                 
             elif action == "get":
@@ -287,10 +387,14 @@ class NodeService:
     async def run(self):
         """Run the service main loop."""
         self.running = True
+        self.event_loop = asyncio.get_event_loop()
         
         try:
             await self.connect_nats()
             await self.setup_subscriptions()
+            
+            # Setup keyboard listener after NATS is connected
+            self._setup_keyboard_listener()
             
             self.logger.info("Node service started. Waiting for messages...")
             
@@ -314,6 +418,14 @@ class NodeService:
         if self.nats_client:
             await self.nats_client.close()
             self.logger.info("NATS connection closed")
+        
+        # Cleanup keyboard listener
+        if self.keyboard_listener:
+            try:
+                self.keyboard_listener.stop()
+                self.logger.info("Keyboard listener stopped")
+            except Exception as e:
+                self.logger.debug(f"Error stopping keyboard listener: {e}")
         
         # Cleanup GPIO
         if GPIO_AVAILABLE and self.gpio_enabled:

@@ -41,6 +41,12 @@
   },
   "logging": {
     "level": "INFO"
+  },
+  "keyboard": {
+    "enabled": false,
+    "pin": "relay1",
+    "key": "play/pause",
+    "subject": "necromancy.node.gpio.control"
   }
 }
 

@@ -139,6 +139,24 @@ Send a message to the service trigger subject (default: `necromancy.node.service
 }
 ```
 
+### Keyboard Control (Optional)
+
+The node can listen for keyboard events (e.g., play/pause media key) and automatically toggle GPIO pins via NATS messages.
+
+**Enable in `config.json`:**
+```json
+"keyboard": {
+  "enabled": true,
+  "pin": "relay1",
+  "key": "play/pause",
+  "subject": "necromancy.node.gpio.control"
+}
+```
+
+When the play/pause key is pressed, the service will automatically publish a NATS message to toggle the configured GPIO pin. The state is tracked internally, so each press toggles between on and off.
+
+**Note**: Keyboard listening requires the `pynput` library and may need appropriate permissions on your system.
+
 ### GPIO Pin Modes
 
 - **OUT**: Output pin for controlling relays, LEDs, etc.
@@ -211,9 +229,9 @@ After=network.target
 
 [Service]
 Type=simple
-User=pi
-WorkingDirectory=/path/to/necromancy-on-nats
-ExecStart=/usr/bin/python3 /path/to/necromancy-on-nats/node.py
+User=raspberry
+WorkingDirectory=/home/raspberry/code/necromancy-on-nats
+ExecStart=/usr/bin/python3 /home/raspberry/code/necromancy-on-nats/node.py
 Restart=always
 RestartSec=10
 
@@ -221,7 +239,21 @@ RestartSec=10
 WantedBy=multi-user.target
 ```
 
-Note: Make sure the system user has access to the packages installed with `--user`. You may need to set the `PYTHONPATH` environment variable in the service file if needed.
+**Important**: 
+- Replace `User=raspberry` with your actual username (or remove this line to run as root, not recommended)
+- Replace `/home/raspberry/code/necromancy-on-nats` with the actual path to your project directory
+- If packages were installed with `--break-system-packages`, the `User=` field may not be needed, or you may need to set `PYTHONPATH` environment variable
+
+**To check your username:**
+```bash
+whoami
+```
+
+**To find your project path:**
+```bash
+pwd
+# While in the necromancy-on-nats directory
+```
 
 Then:
 ```bash
