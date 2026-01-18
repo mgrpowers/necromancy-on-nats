@@ -70,6 +70,8 @@ class HIDNodeService:
                     "toggle_key": "relay1"
                 }
             }
+            self.logger.info(f"Configured key mappings (evdev codes): {self.key_mappings}")
+            self.logger.info(f"Looking for KEY_1 (code: {ecodes.KEY_1})")
         elif self.use_pynput:
             # macOS/Windows: use pynput key names
             # Map character '1' to relay1 (itsybitsy first key)
@@ -93,7 +95,7 @@ class HIDNodeService:
     def _setup_logging(self):
         """Configure logging."""
         logging.basicConfig(
-            level=logging.INFO,
+            level=logging.DEBUG,  # Use DEBUG to see all events
             format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
         )
         self.logger = logging.getLogger(__name__)
@@ -176,11 +178,23 @@ class HIDNodeService:
         
         if self.use_evdev and event is not None:
             # Linux: evdev event
-            if event.type == ecodes.EV_KEY and event.value == 1:  # Key press
+            # Log all key events (press, release, repeat) for debugging
+            if event.type == ecodes.EV_KEY:
                 key_event = categorize(event)
                 key_code = event.code
                 key_name = str(key_event.keycode)
-                self.logger.info(f"Key pressed: {key_name} (code: {key_code})")
+                
+                # Log key press (value == 1), release (value == 0), or repeat (value == 2)
+                if event.value == 1:
+                    self.logger.info(f"Key PRESSED: {key_name} (code: {key_code})")
+                elif event.value == 0:
+                    self.logger.debug(f"Key released: {key_name} (code: {key_code})")
+                elif event.value == 2:
+                    self.logger.debug(f"Key repeat: {key_name} (code: {key_code})")
+                
+                # Only process key presses (value == 1)
+                if event.value != 1:
+                    return
         
         elif self.use_pynput and key is not None:
             # macOS/Windows: pynput key
@@ -206,6 +220,9 @@ class HIDNodeService:
         if key_code is None:
             return
         
+        # Log all received key codes for debugging
+        self.logger.debug(f"Received key_code: {key_code} (looking for: {list(self.key_mappings.keys())})")
+        
         # Check if this key is mapped
         if key_code in self.key_mappings:
             mapping = self.key_mappings[key_code]
@@ -221,6 +238,8 @@ class HIDNodeService:
             
             # Publish NATS message
             self._publish_gpio_control(pin, new_state)
+        else:
+            self.logger.debug(f"Key code {key_code} ({key_name}) not in key_mappings")
     
     def _on_pynput_key_press(self, key):
         """Callback for pynput key press events."""
@@ -238,9 +257,12 @@ class HIDNodeService:
                 for event in self.input_device.read_loop():
                     if not self.running:
                         break
+                    # Log all events for debugging (filter out sync events)
+                    if event.type != ecodes.EV_SYN:
+                        self.logger.debug(f"Event: type={event.type}, code={event.code}, value={event.value}")
                     self._on_key_event(event=event)
             except Exception as e:
-                self.logger.error(f"Error in evdev input loop: {e}")
+                self.logger.error(f"Error in evdev input loop: {e}", exc_info=True)
             finally:
                 self.logger.info("Input event loop stopped")
         elif self.use_pynput:
