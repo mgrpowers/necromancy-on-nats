@@ -115,12 +115,26 @@ class HIDNodeService:
         for device in devices:
             self.logger.info(f"  {device.path}: {device.name} ({device.phys})")
         
-        # Try to find itsybitsy keyboard by name
+        # Try to find itsybitsy keyboard by name - prefer "Keyboard" over "Mouse"
+        keyboard_device = None
+        mouse_device = None
+        
         for device in devices:
             name_lower = device.name.lower()
             if 'itsybitsy' in name_lower or 'keyboard' in name_lower:
-                self.logger.info(f"Found potential keyboard: {device.path} ({device.name})")
-                return device.path
+                if 'keyboard' in name_lower:
+                    keyboard_device = device
+                    self.logger.info(f"Found keyboard device: {device.path} ({device.name})")
+                elif 'mouse' in name_lower:
+                    mouse_device = device
+                    self.logger.info(f"Found mouse device: {device.path} ({device.name})")
+        
+        # Prefer keyboard over mouse
+        if keyboard_device:
+            return keyboard_device.path
+        elif mouse_device:
+            self.logger.warning(f"Using mouse device instead of keyboard: {mouse_device.path}")
+            return mouse_device.path
         
         # If not found by name, try to find any keyboard device
         # Check if device has KEY capability
