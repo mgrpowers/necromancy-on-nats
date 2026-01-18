@@ -55,6 +55,9 @@ class HIDNodeService:
         self.nats_server = "nats://192.168.50.118:4222"
         self.subject = "necromancy.node.gpio.control"
         
+        # Setup logging first (before we try to log anything)
+        self._setup_logging()
+        
         # Key mappings: key_code -> (pin_name, toggle_state_key)
         # Linux (evdev): uses numeric key codes (KEY_1 = 2, KEY_2 = 3, etc.)
         # macOS (pynput): uses key names or characters ('1', '2', etc.)
@@ -81,6 +84,7 @@ class HIDNodeService:
                     "toggle_key": "relay1"
                 }
             }
+            self.logger.info(f"Configured key mappings (pynput): {self.key_mappings}")
         else:
             # Fallback: numeric codes
             self.key_mappings = {
@@ -89,8 +93,7 @@ class HIDNodeService:
                     "toggle_key": "relay1"
                 }
             }
-        
-        self._setup_logging()
+            self.logger.info(f"Configured key mappings (fallback): {self.key_mappings}")
     
     def _setup_logging(self):
         """Configure logging."""
