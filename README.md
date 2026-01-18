@@ -262,6 +262,84 @@ sudo systemctl enable necromancy-node
 sudo systemctl start necromancy-node
 ```
 
+### HID Node Service
+
+A separate service (`hid-node.py`) that listens for HID keyboard input (e.g., itsybitsy 6-key keyboard) and publishes NATS commands to control GPIO.
+
+**Platform Support:**
+- **Linux (Raspberry Pi)**: Uses `evdev` for device-specific HID input
+- **macOS**: Uses `pynput` for keyboard input (captures all keyboards)
+
+**Prerequisites:**
+- Linux: `evdev` library (`pip install evdev`)
+- macOS: `pynput` library (`pip install pynput`)
+
+**Run the HID node service:**
+```bash
+python hid-node.py
+```
+
+**Configuration:**
+Currently hardcoded in the script:
+- NATS server: `nats://192.168.50.118:4222`
+- Subject: `necromancy.node.gpio.control`
+- Default key mapping: Key '1' (or KEY_1 on Linux) → `relay1` pin
+
+**How it works:**
+- Listens for specific keyboard key presses (default: '1' key)
+- Toggles GPIO state on each key press
+- Publishes NATS message: `{"pin": "relay1", "action": "set", "value": <toggled_state>}`
+
+**Systemd Service Setup:**
+
+To run `hid-node.py` as a system service on Raspberry Pi, create `/etc/systemd/system/necromancy-hid-node.service`:
+
+```ini
+[Unit]
+Description=Necromancy on NATS HID Node Service
+After=network.target
+
+[Service]
+Type=simple
+User=raspberry
+WorkingDirectory=/home/raspberry/code/necromancy-on-nats
+ExecStart=/usr/bin/python3 /home/raspberry/code/necromancy-on-nats/hid-node.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+```
+
+**Important**: 
+- Replace `User=raspberry` with your actual username (check with `whoami`)
+- Replace `/home/raspberry/code/necromancy-on-nats` with your actual project path (check with `pwd` while in the project directory)
+- On Linux, ensure the user has access to input devices (typically requires being in the `input` group)
+
+**To set up the service:**
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable necromancy-hid-node
+sudo systemctl start necromancy-hid-node
+```
+
+**Check service status:**
+```bash
+sudo systemctl status necromancy-hid-node
+```
+
+**View logs:**
+```bash
+sudo journalctl -u necromancy-hid-node -f
+```
+
+**Permissions Note (Linux):**
+If you get permission errors accessing input devices, add your user to the `input` group:
+```bash
+sudo usermod -a -G input $USER
+# Then log out and log back in, or reboot
+```
+
 ### Development
 
 The node service is designed to be extensible. You can add custom operations by:

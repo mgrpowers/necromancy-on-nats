@@ -1,4 +1,5 @@
 nats-py>=2.6.0
 gpiozero>=1.6.2
 pynput>=1.7.6
+evdev>=1.6.1
 

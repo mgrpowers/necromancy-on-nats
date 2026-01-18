@@ -47,6 +47,10 @@
     "pin": "relay1",
     "key": "play/pause",
     "subject": "necromancy.node.gpio.control"
+  },
+  "smiley": {
+    "pin": "relay1",
+    "subject": "necromancy.node.gpio.control"
   }
 }
 
