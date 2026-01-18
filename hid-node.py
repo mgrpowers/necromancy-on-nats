@@ -183,21 +183,30 @@ class HIDNodeService:
             # Linux: evdev event
             # Log all key events (press, release, repeat) for debugging
             if event.type == ecodes.EV_KEY:
-                key_event = categorize(event)
-                key_code = event.code
-                key_name = str(key_event.keycode)
-                
-                # Log key press (value == 1), release (value == 0), or repeat (value == 2)
-                if event.value == 1:
-                    self.logger.info(f"Key PRESSED: {key_name} (code: {key_code})")
-                elif event.value == 0:
-                    self.logger.debug(f"Key released: {key_name} (code: {key_code})")
-                elif event.value == 2:
-                    self.logger.debug(f"Key repeat: {key_name} (code: {key_code})")
-                
-                # Only process key presses (value == 1)
-                if event.value != 1:
+                try:
+                    key_event = categorize(event)
+                    key_code = event.code
+                    key_name = str(key_event.keycode)
+                    
+                    # Log key press (value == 1), release (value == 0), or repeat (value == 2)
+                    if event.value == 1:
+                        self.logger.info(f"Key PRESSED: {key_name} (code: {key_code})")
+                    elif event.value == 0:
+                        self.logger.info(f"Key released: {key_name} (code: {key_code})")
+                    elif event.value == 2:
+                        self.logger.info(f"Key repeat: {key_name} (code: {key_code})")
+                    
+                    # Only process key presses (value == 1)
+                    if event.value != 1:
+                        return
+                except Exception as e:
+                    self.logger.error(f"Error categorizing key event: {e}, type={event.type}, code={event.code}, value={event.value}", exc_info=True)
                     return
+            else:
+                # Not a key event - log at debug level but don't process
+                if event.type != ecodes.EV_SYN:
+                    self.logger.debug(f"Non-key event: type={event.type}, code={event.code}, value={event.value}")
+                return
         
         elif self.use_pynput and key is not None:
             # macOS/Windows: pynput key
@@ -256,18 +265,32 @@ class HIDNodeService:
         if self.use_evdev and self.input_device is not None:
             # Linux: evdev loop
             self.logger.info("Starting evdev input event loop...")
+            self.logger.info(f"Waiting for events from device: {self.input_device.path} ({self.input_device.name})")
+            event_count = 0
             try:
                 for event in self.input_device.read_loop():
+                    event_count += 1
+                    if event_count == 1:
+                        self.logger.info(f"Input loop is running - received first event!")
+                    
                     if not self.running:
+                        self.logger.info("Input loop: running flag is False, breaking")
                         break
-                    # Log all events for debugging (filter out sync events)
-                    if event.type != ecodes.EV_SYN:
-                        self.logger.debug(f"Event: type={event.type}, code={event.code}, value={event.value}")
-                    self._on_key_event(event=event)
+                    try:
+                        # Log all events for debugging (filter out sync events)
+                        if event.type != ecodes.EV_SYN:
+                            self.logger.info(f"Event #{event_count} received: type={event.type} (EV_KEY={ecodes.EV_KEY}), code={event.code}, value={event.value}")
+                        
+                        # Process the event
+                        self._on_key_event(event=event)
+                    except Exception as e:
+                        self.logger.error(f"Error processing event #{event_count}: {e}", exc_info=True)
+            except OSError as e:
+                self.logger.error(f"OSError in evdev input loop (permissions?): {e}", exc_info=True)
             except Exception as e:
                 self.logger.error(f"Error in evdev input loop: {e}", exc_info=True)
             finally:
-                self.logger.info("Input event loop stopped")
+                self.logger.info(f"Input event loop stopped (processed {event_count} events)")
         elif self.use_pynput:
             # macOS/Windows: pynput listener
             self.logger.info("Starting pynput keyboard listener...")
